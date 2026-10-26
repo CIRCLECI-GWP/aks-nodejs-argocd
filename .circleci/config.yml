@@ -1,14 +1,14 @@
 version: 2.1
 
 orbs:
-  docker: circleci/docker@2.1.1
-  azure-aks: circleci/azure-aks@0.3.0
-  kubernetes: circleci/kubernetes@1.3.0
+  docker: circleci/docker@4.0.1
+  azure-cli: circleci/azure-cli@1.3.2
+  kubernetes: circleci/kubernetes@2.0.2
 
 jobs:
   argocd-manual-sync:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/base:2026.10
     parameters:
       server:
         description: |
@@ -28,7 +28,7 @@ jobs:
           command: |
             URL=https://<< parameters.server >>/download/argocd-linux-amd64
             [ -w /usr/local/bin ] && SUDO="" || SUDO=sudo
-            $SUDO curl --insecure -sSL -o /usr/local/bin/argocd $URL
+            $SUDO curl --insecure -fsSL -o /usr/local/bin/argocd $URL
             $SUDO chmod +x /usr/local/bin/argocd
       - run:
           name: ArgoCD CLI login
@@ -41,7 +41,8 @@ jobs:
           command: argocd app wait $APP_NAME
 
   argocd-configure:
-    executor: azure-aks/default
+    docker:
+      - image: cimg/base:2026.10
     parameters:
       cluster-name:
         description: |
@@ -56,22 +57,25 @@ jobs:
       - run:
           name: Pull Updated code from repo
           command: git pull origin $CIRCLE_BRANCH
-      - azure-aks/update-kubeconfig-with-credentials:
-          cluster-name: << parameters.cluster-name >>
-          install-kubectl: true
-          perform-login: true
-          resource-group: << parameters.resource-group >>
-      - kubernetes/create-or-update-resource:
-          resource-file-path: argocd/config.yaml
+      - azure-cli/install
+      - run:
+          name: Log in to Azure with the service principal
+          command: az login --service-principal --tenant "$AZURE_SP_TENANT" --username "$AZURE_SP" --password "$AZURE_SP_PASSWORD" --output none
+      - run:
+          name: Get AKS credentials
+          command: az aks get-credentials --resource-group << parameters.resource-group >> --name << parameters.cluster-name >>
+      - kubernetes/install_kubectl
+      - kubernetes/create_or_update_resource:
+          resource_file_path: argocd/config.yaml
 
   bump-docker-tag-kustomize:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/base:2026.10
     steps:
       - run:
           name: Install kustomize
           command: |
-            URL=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v4.5.2/kustomize_v4.5.2_linux_amd64.tar.gz
+            URL=https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.8.3/kustomize_v5.8.3_linux_amd64.tar.gz
             curl -L $URL | tar zx
             [ -w /usr/local/bin ] && SUDO="" || SUDO=sudo
             $SUDO chmod +x ./kustomize
@@ -82,9 +86,6 @@ jobs:
           command: |
             cd manifests
             kustomize edit set image $APP_NAME=$DOCKER_LOGIN/$APP_NAME:$CIRCLE_SHA1
-      - add_ssh_keys:
-          fingerprints:
-            - "$SSH_FINGERPRINT"
       - run:
           name: Commit & Push to GitHub
           command: |
